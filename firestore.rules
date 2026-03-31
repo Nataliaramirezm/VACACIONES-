@@ -1,0 +1,97 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ===============================================================
+    // Helper Functions
+    // ===============================================================
+    function isAuthenticated() {
+      return request.auth != null;
+    }
+    
+    function isOwner(userId) {
+      return isAuthenticated() && request.auth.uid == userId;
+    }
+    
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function userExists() {
+      return exists(/databases/$(database)/documents/users/$(request.auth.uid));
+    }
+    
+    function isAdmin() {
+      return isAuthenticated() && (
+        (userExists() && getUserData().role == 'hr') ||
+        (request.auth.token.email == "nmrm01@gmail.com" && request.auth.token.email_verified == true) ||
+        (request.auth.token.email == "asis.tthh@compufacil.com.ec" && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isHR() {
+      return isAdmin();
+    }
+    
+    function isManager() {
+      return isAuthenticated() && userExists() && getUserData().role == 'manager';
+    }
+
+    function hasRequiredFields(fields) {
+      return request.resource.data.keys().hasAll(fields);
+    }
+
+    function hasOnlyAllowedFields(fields) {
+      return request.resource.data.keys().hasOnly(fields);
+    }
+
+    // ===============================================================
+    // Domain Validators
+    // ===============================================================
+    function isValidUser(data) {
+      return hasOnlyAllowedFields(['uid', 'displayName', 'email', 'role', 'position', 'managerUid', 'entryDate', 'totalVacationDays', 'usedVacationDays', 'pendingVacationDays']) &&
+             data.uid is string &&
+             data.email is string &&
+             data.role in ['employee', 'manager', 'hr'] &&
+             data.entryDate is string;
+    }
+
+    function isValidRequest(data) {
+      return hasOnlyAllowedFields(['id', 'userUid', 'userName', 'type', 'startDate', 'endDate', 'status', 'reason', 'createdAt', 'updatedAt', 'managerApproverUid', 'hrApproverUid', 'managerUid']) &&
+             data.userUid is string &&
+             data.type in ['vacation', 'permission'] &&
+             data.status in ['pending_manager', 'pending_hr', 'approved', 'rejected'] &&
+             data.startDate is string &&
+             data.endDate is string;
+    }
+
+    // ===============================================================
+    // Collection Rules
+    // ===============================================================
+
+    // User Profiles
+    match /users/{userId} {
+      allow read: if isOwner(userId) || isHR() || isManager();
+      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isHR()) && isValidUser(request.resource.data);
+      allow delete: if isHR() && 
+                      get(/databases/$(database)/documents/users/$(userId)).data.email != 'nmrm01@gmail.com' &&
+                      get(/databases/$(database)/documents/users/$(userId)).data.email != 'asis.tthh@compufacil.com.ec';
+    }
+
+    // Requests
+    match /requests/{requestId} {
+      allow read: if isAuthenticated() && (
+        request.auth.uid == resource.data.userUid || 
+        isHR() || 
+        (isManager() && (resource.data.managerUid == request.auth.uid || resource.data.userUid == request.auth.uid))
+      );
+      allow create: if isAuthenticated() && request.resource.data.userUid == request.auth.uid && isValidRequest(request.resource.data);
+      allow update: if isAuthenticated() && isValidRequest(request.resource.data) && (
+        isHR() || 
+        (isManager() && resource.data.managerUid == request.auth.uid && resource.data.status == 'pending_manager') ||
+        (isOwner(resource.data.userUid) && resource.data.status == 'pending_manager')
+      );
+      allow delete: if isHR();
+    }
+  }
+}

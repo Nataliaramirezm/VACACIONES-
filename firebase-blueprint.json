@@ -1,0 +1,52 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "User profile with role and vacation information",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "displayName": { "type": "string" },
+        "email": { "type": "string" },
+        "role": { "type": "string", "enum": ["employee", "manager", "hr"] },
+        "position": { "type": "string" },
+        "managerUid": { "type": "string" },
+        "entryDate": { "type": "string", "format": "date" },
+        "totalVacationDays": { "type": "number" },
+        "usedVacationDays": { "type": "number" },
+        "pendingVacationDays": { "type": "number" }
+      },
+      "required": ["uid", "email", "role", "entryDate"]
+    },
+    "Request": {
+      "title": "Request",
+      "description": "Vacation or permission request",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "userUid": { "type": "string" },
+        "userName": { "type": "string" },
+        "type": { "type": "string", "enum": ["vacation", "permission"] },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "status": { "type": "string", "enum": ["pending_manager", "pending_hr", "approved", "rejected"] },
+        "reason": { "type": "string" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" },
+        "managerApproverUid": { "type": "string" },
+        "hrApproverUid": { "type": "string" }
+      },
+      "required": ["userUid", "type", "startDate", "endDate", "status"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": "User",
+      "description": "User profile documents"
+    },
+    "/requests/{requestId}": {
+      "schema": "Request",
+      "description": "Vacation and permission requests"
+    }
+  }
+}
