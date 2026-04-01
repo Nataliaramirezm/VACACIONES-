@@ -26,7 +26,7 @@ export default function Register() {
   React.useEffect(() => {
     const fetchManagers = async () => {
       try {
-        const q = query(collection(db, 'users'), where('role', 'in', ['manager', 'hr']));
+        const q = query(collection(db, 'users'), where('role', 'in', ['manager', 'hr', 'gerencia']));
         const querySnapshot = await getDocs(q);
         const managerList = querySnapshot.docs.map(doc => doc.data() as UserProfile);
         setManagers(managerList);
@@ -59,7 +59,7 @@ export default function Register() {
               managerUid: formData.role === 'employee' ? formData.managerUid : '',
               totalVacationDays: annualDays,
               usedVacationDays: 0,
-              pendingVacationDays: annualDays,
+              pendingVacationDays: 0,
             });
           } catch (err) {
         handleFirestoreError(err, OperationType.WRITE, `users/${user.uid}`);
@@ -188,6 +188,7 @@ export default function Register() {
               >
                 <option value="employee">Empleado</option>
                 <option value="manager">Jefe Inmediato</option>
+                <option value="gerencia">Gerencia</option>
                 <option value="hr">Talento Humano</option>
               </select>
             </div>

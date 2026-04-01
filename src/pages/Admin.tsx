@@ -4,19 +4,22 @@ import { useNavigate } from 'react-router-dom';
 import { collection, onSnapshot, doc, updateDoc, getDocs, query, where, deleteDoc, getDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { UserProfile, UserRole } from '../types';
-import { Users, FileUp, Download, Search, AlertCircle, CheckCircle, Save, Trash2, Edit2, X } from 'lucide-react';
+import { UserProfile, UserRole, AuditLog } from '../types';
+import { Users, FileUp, Download, Search, AlertCircle, CheckCircle, Save, Trash2, Edit2, X, RotateCcw, Key, ClipboardList, History } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
+import { calculateTotalEarnedDays, formatDate, parseDate, calculateVacationPeriod, calculatePeriodToUse } from '../lib/vacation';
 
 export default function Admin() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserProfile[]>([]);
+  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [uploadStatus, setUploadStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
   
   // Edit Modal State
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
@@ -25,11 +28,19 @@ export default function Admin() {
   // Delete Confirmation State
   const [userToDelete, setUserToDelete] = useState<string | null>(null);
 
+  // Password Change State
+  const [passwordUser, setPasswordUser] = useState<UserProfile | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [isUpdatingPassword, setIsUpdatingPassword] = useState(false);
+
   useEffect(() => {
     if (!profile) return;
     
-    // Only fetch if HR or Super Admin
-    if (profile.role !== 'hr' && profile.email !== 'nmrm01@gmail.com') {
+    // Only fetch if HR, Gerencia or Super Admin
+    const isSuperAdmin = profile.email === 'nmrm01@gmail.com' || profile.email === 'asis.tthh@compufacil.com.ec';
+    const canAccessAdmin = profile.role === 'hr' || profile.role === 'gerencia' || isSuperAdmin;
+    
+    if (!canAccessAdmin) {
       setLoading(false);
       return;
     }
@@ -43,8 +54,53 @@ export default function Admin() {
       setLoading(false);
     });
 
-    return () => unsubscribe();
+    const logsUnsubscribe = onSnapshot(query(collection(db, 'audit_logs'), where('timestamp', '>=', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())), (snapshot) => {
+      const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuditLog));
+      setAuditLogs(logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
+    });
+
+    return () => {
+      unsubscribe();
+      logsUnsubscribe();
+    };
   }, [profile]);
+
+  const handleExportRequests = async () => {
+    try {
+      const q = query(collection(db, 'requests'));
+      const snapshot = await getDocs(q);
+      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
+
+      if (requests.length === 0) {
+        toast.error('No hay solicitudes para exportar');
+        return;
+      }
+
+      const exportData = requests.map(req => ({
+        'ID': req.id,
+        'Empleado': req.userName,
+        'Tipo': req.type === 'vacation' ? 'Vacaciones' : 'Permiso',
+        'Desde': formatDate(req.startDate),
+        'Hasta': formatDate(req.endDate),
+        'Estado': req.status.replace('pending_', 'Pendiente ').replace('approved', 'Aprobado').replace('rejected', 'Rechazado').replace('cancelled', 'Cancelado'),
+        'Motivo': req.reason,
+        'Reemplazo': req.replacementName || 'N/A',
+        'Aprobador Jefe': req.managerApproverName || 'Pendiente',
+        'Aprobador Gerencia': req.gerenciaApproverName || 'Pendiente',
+        'Aprobador Reemplazo': req.replacementApproverName || 'Pendiente',
+        'Aprobador RRHH': req.hrApproverName || 'Pendiente',
+        'Fecha Creación': new Date(req.createdAt).toLocaleString(),
+      }));
+
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Solicitudes");
+      XLSX.writeFile(wb, `Reporte_Global_Solicitudes_${new Date().toISOString().split('T')[0]}.xlsx`);
+      toast.success('Reporte de solicitudes exportado correctamente');
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'requests');
+    }
+  };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -79,8 +135,17 @@ export default function Admin() {
             if (row.usedVacationDays !== undefined) updateData.usedVacationDays = Number(row.usedVacationDays);
             if (row.pendingVacationDays !== undefined) updateData.pendingVacationDays = Number(row.pendingVacationDays);
             if (row.position !== undefined) updateData.position = row.position;
+            if (row.manualVacationPeriod !== undefined) updateData.manualVacationPeriod = String(row.manualVacationPeriod);
 
-            await updateDoc(userRef, updateData);
+            await fetch('/api/admin/update-user', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                adminUid: profile?.uid,
+                targetUid: userDoc.id,
+                updates: updateData
+              })
+            });
             updatedCount++;
           } else {
             errorCount++;
@@ -101,18 +166,37 @@ export default function Admin() {
 
   const handleRoleChange = async (uid: string, newRole: UserRole) => {
     try {
-      await updateDoc(doc(db, 'users', uid), { role: newRole });
+      await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adminUid: profile?.uid,
+          targetUid: uid,
+          updates: { role: newRole }
+        })
+      });
+      toast.success('Rol actualizado correctamente');
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+      console.error('Error updating role:', error);
+      toast.error('Error al actualizar rol');
     }
   };
 
   const handleManagerChange = async (uid: string, newManagerUid: string) => {
     try {
-      await updateDoc(doc(db, 'users', uid), { managerUid: newManagerUid });
+      await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adminUid: profile?.uid,
+          targetUid: uid,
+          updates: { managerUid: newManagerUid }
+        })
+      });
       toast.success('Jefe actualizado correctamente');
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+      console.error('Error updating manager:', error);
+      toast.error('Error al actualizar jefe');
     }
   };
 
@@ -153,7 +237,7 @@ export default function Admin() {
       const response = await fetch('/api/delete-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: userToDelete }),
+        body: JSON.stringify({ uid: userToDelete, adminUid: profile?.uid }),
       });
       
       const data = await response.json();
@@ -190,34 +274,76 @@ export default function Admin() {
       usedVacationDays: user.usedVacationDays,
       pendingVacationDays: user.pendingVacationDays,
       managerUid: user.managerUid || '',
+      entryDate: user.entryDate,
+      manualVacationPeriod: user.manualVacationPeriod || '',
     });
   };
 
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     const promise = async () => {
-      try {
-        const userRef = doc(db, 'users', editingUser.uid);
-        await updateDoc(userRef, editFormData);
-        setEditingUser(null);
-      } catch (err) {
-        handleFirestoreError(err, OperationType.UPDATE, `users/${editingUser.uid}`);
-      }
+      const response = await fetch('/api/admin/update-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adminUid: profile?.uid,
+          targetUid: editingUser.uid,
+          updates: editFormData
+        })
+      });
+      
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+      
+      setEditingUser(null);
     };
 
     toast.promise(promise(), {
       loading: 'Guardando cambios...',
       success: 'Usuario actualizado correctamente',
-      error: 'Error al actualizar usuario',
+      error: (err) => err.message || 'Error al actualizar usuario',
     });
   };
 
-  const managers = users.filter(u => u.role === 'manager' || u.role === 'hr');
+  const managers = users.filter(u => u.role === 'manager' || u.role === 'hr' || u.role === 'gerencia');
 
   const filteredUsers = users.filter(u => 
     u.displayName.toLowerCase().includes(searchTerm.toLowerCase()) || 
     u.email.toLowerCase().includes(searchTerm.toLowerCase())
   );
+
+  const handleUpdatePassword = async () => {
+    if (!passwordUser || !newPassword) return;
+    if (newPassword.length < 6) {
+      toast.error('La contraseña debe tener al menos 6 caracteres');
+      return;
+    }
+
+    setIsUpdatingPassword(true);
+    try {
+      const response = await fetch('/api/admin/update-password', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          adminUid: profile?.uid,
+          targetUid: passwordUser.uid,
+          newPassword
+        })
+      });
+
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error);
+
+      toast.success('Contraseña actualizada correctamente');
+      setPasswordUser(null);
+      setNewPassword('');
+    } catch (error: any) {
+      console.error('Error updating password:', error);
+      toast.error(`Error: ${error.message}`);
+    } finally {
+      setIsUpdatingPassword(false);
+    }
+  };
 
   if (loading) return <div className="flex justify-center p-12">Cargando usuarios...</div>;
 
@@ -225,11 +351,55 @@ export default function Admin() {
     <div className="space-y-8 pb-20">
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-6">
         <div>
-          <h1 className="text-3xl font-bold text-slate-900">Panel de Administración (RRHH)</h1>
+          <h1 className="text-3xl font-bold text-slate-900">
+            Panel de {profile?.role === 'gerencia' ? 'Gerencia' : 'Administración'}
+          </h1>
           <p className="text-slate-500">Control total de usuarios, permisos y saldos de vacaciones.</p>
         </div>
         
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowLogs(true)}
+            className="bg-slate-50 border border-slate-200 hover:border-slate-500 text-slate-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
+          >
+            <History size={20} className="text-slate-600" />
+            <span>Ver Bitácora</span>
+          </button>
+
+          <button
+            onClick={handleExportRequests}
+            className="bg-emerald-50 border border-emerald-200 hover:border-emerald-500 text-emerald-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
+          >
+            <Download size={20} className="text-emerald-600" />
+            <span>Exportar Solicitudes</span>
+          </button>
+
+          <button
+            onClick={async () => {
+              const promise = async () => {
+                const response = await fetch('/api/admin/recalculate-all', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ adminUid: profile?.uid })
+                });
+                
+                const data = await response.json();
+                if (!response.ok) throw new Error(data.error || 'Error al recalcular');
+                return data;
+              };
+
+              toast.promise(promise(), {
+                loading: 'Recalculando todos los saldos...',
+                success: (data) => `Saldos actualizados. Se modificaron ${data.updatedCount} usuarios.`,
+                error: (err) => err.message || 'Error al recalcular saldos'
+              });
+            }}
+            className="bg-orange-50 border border-orange-200 hover:border-orange-500 text-orange-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
+          >
+            <RotateCcw size={20} className="text-orange-600" />
+            <span>Recalcular Todo</span>
+          </button>
+
           <label className="bg-white border border-slate-200 hover:border-blue-500 text-slate-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 cursor-pointer shadow-sm">
             <FileUp size={20} className="text-blue-600" />
             <span>Actualizar vía Excel</span>
@@ -273,6 +443,7 @@ export default function Admin() {
                 <th className="px-6 py-4">Usuario</th>
                 <th className="px-6 py-4">Cargo / Rol</th>
                 <th className="px-6 py-4">Ingreso</th>
+                <th className="px-6 py-4">Periodos</th>
                 <th className="px-6 py-4 text-center">Totales</th>
                 <th className="px-6 py-4 text-center">Usados</th>
                 <th className="px-6 py-4 text-center">Pendientes</th>
@@ -303,31 +474,49 @@ export default function Admin() {
                       >
                         <option value="employee">Empleado</option>
                         <option value="manager">Jefe</option>
+                        <option value="gerencia">Gerencia</option>
                         <option value="hr">RRHH</option>
                       </select>
                       
-                      {u.role === 'employee' && (
+                      {(u.role === 'employee' || u.role === 'manager') && (
                         <select 
                           value={u.managerUid || ''}
                           onChange={(e) => handleManagerChange(u.uid, e.target.value)}
                           className="text-[10px] font-medium bg-blue-50 border-none rounded px-1.5 py-0.5 focus:ring-1 focus:ring-blue-500 outline-none"
                         >
-                          <option value="">Sin Jefe</option>
-                          {managers.filter(m => m.uid !== u.uid).map(m => (
-                            <option key={m.uid} value={m.uid}>{m.displayName}</option>
+                          <option value="">{u.role === 'manager' ? 'Sin Gerencia' : 'Sin Jefe'}</option>
+                          {users.filter(m => m.uid !== u.uid && (m.role === 'manager' || m.role === 'gerencia' || m.role === 'hr')).map(m => (
+                            <option key={m.uid} value={m.uid}>{m.displayName} ({m.role === 'gerencia' ? 'Gerencia' : 'Jefe'})</option>
                           ))}
                         </select>
                       )}
                     </div>
                   </td>
                   <td className="px-6 py-4 text-slate-500">
-                    {new Date(u.entryDate).toLocaleDateString()}
+                    {formatDate(u.entryDate)}
+                  </td>
+                  <td className="px-6 py-4">
+                    <div className="flex flex-col gap-1">
+                      <span className="text-[9px] font-bold bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full uppercase tracking-wider border border-amber-100">
+                        A Utilizar: {u.manualVacationPeriod || calculatePeriodToUse(u.entryDate, u.usedVacationDays)}
+                      </span>
+                      <span className="text-[9px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full uppercase tracking-wider border border-blue-100">
+                        Acumulando: {calculateVacationPeriod(u.entryDate)}
+                      </span>
+                    </div>
                   </td>
                   <td className="px-6 py-4 text-center font-bold text-slate-900">{u.totalVacationDays}</td>
                   <td className="px-6 py-4 text-center font-bold text-green-600">{u.usedVacationDays}</td>
                   <td className="px-6 py-4 text-center font-bold text-orange-600">{u.pendingVacationDays}</td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      <button 
+                        onClick={() => setPasswordUser(u)}
+                        className="p-2 text-slate-400 hover:text-amber-600 transition-colors"
+                        title="Cambiar Contraseña"
+                      >
+                        <Key size={18} />
+                      </button>
                       <button 
                         onClick={() => handleEditClick(u)}
                         className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
@@ -358,11 +547,11 @@ export default function Admin() {
         </div>
         <div className="flex-1 space-y-2 text-center md:text-left">
           <h3 className="text-xl font-bold">Formato de Excel para Carga Masiva</h3>
-          <p className="text-slate-400 text-sm">El archivo debe contener las columnas: <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">email</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">totalVacationDays</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">usedVacationDays</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">pendingVacationDays</code>.</p>
+          <p className="text-slate-400 text-sm">El archivo debe contener las columnas: <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">email</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">totalVacationDays</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">usedVacationDays</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">pendingVacationDays</code>, <code className="bg-slate-800 px-2 py-1 rounded text-blue-400">manualVacationPeriod</code>.</p>
         </div>
         <button 
           onClick={() => {
-            const ws = XLSX.utils.json_to_sheet([{ email: 'ejemplo@empresa.com', totalVacationDays: 15, usedVacationDays: 0, pendingVacationDays: 15 }]);
+            const ws = XLSX.utils.json_to_sheet([{ email: 'ejemplo@empresa.com', totalVacationDays: 15, usedVacationDays: 0, pendingVacationDays: 15, manualVacationPeriod: 'Enero 2023 - Enero 2024' }]);
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, ws, "Plantilla");
             XLSX.writeFile(wb, "Plantilla_Vacaciones.xlsx");
@@ -372,6 +561,103 @@ export default function Admin() {
           Descargar Plantilla
         </button>
       </div>
+
+      {/* Audit Logs Modal */}
+      <AnimatePresence>
+        {showLogs && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
+                <div className="flex items-center gap-3">
+                  <div className="bg-slate-900 text-white p-2 rounded-lg">
+                    <ClipboardList size={20} />
+                  </div>
+                  <div>
+                    <h2 className="text-xl font-bold text-slate-900">Bitácora de Auditoría</h2>
+                    <p className="text-xs text-slate-500">Registro de cambios administrativos (Últimos 30 días)</p>
+                  </div>
+                </div>
+                <button onClick={() => setShowLogs(false)} className="text-slate-400 hover:text-slate-600 p-2 hover:bg-slate-100 rounded-full transition-all">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="flex-1 overflow-y-auto p-6">
+                <div className="space-y-4">
+                  {auditLogs.length === 0 ? (
+                    <div className="text-center py-12 text-slate-500">
+                      <History size={48} className="mx-auto mb-4 opacity-20" />
+                      <p>No hay registros de auditoría recientes.</p>
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-slate-100">
+                      {auditLogs.map((log) => (
+                        <div key={log.id} className="py-4 first:pt-0 last:pb-0">
+                          <div className="flex items-start justify-between gap-4 mb-2">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded uppercase">
+                                {log.action.replace('_', ' ')}
+                              </span>
+                              <span className="text-xs text-slate-400">
+                                {new Date(log.timestamp).toLocaleString()}
+                              </span>
+                            </div>
+                            <span className="text-[10px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded">
+                              IP: {log.ip}
+                            </span>
+                          </div>
+                          
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+                            <div>
+                              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Administrador</p>
+                              <p className="text-slate-900 font-medium">{log.adminName}</p>
+                              <p className="text-[10px] text-slate-400">{log.adminEmail}</p>
+                            </div>
+                            <div>
+                              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Usuario Objetivo</p>
+                              <p className="text-slate-900 font-medium">{log.targetName}</p>
+                              <p className="text-[10px] text-slate-400">{log.targetEmail}</p>
+                            </div>
+                          </div>
+
+                          {log.changes && log.changes.length > 0 && (
+                            <div className="mt-3 bg-slate-50 rounded-lg p-3 border border-slate-100">
+                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Cambios Realizados:</p>
+                              <div className="space-y-2">
+                                {log.changes.map((change, idx) => (
+                                  <div key={idx} className="flex flex-wrap items-center gap-2 text-xs">
+                                    <span className="font-bold text-slate-700">{change.field}:</span>
+                                    <span className="text-red-500 line-through bg-red-50 px-1.5 py-0.5 rounded">
+                                      {String(change.oldValue)}
+                                    </span>
+                                    <span className="text-slate-400">→</span>
+                                    <span className="text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded">
+                                      {String(change.newValue)}
+                                    </span>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+              
+              <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
+                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Fin del Registro</p>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
 
       {/* Edit User Modal */}
       <AnimatePresence>
@@ -419,13 +705,32 @@ export default function Admin() {
                     >
                       <option value="">Sin Jefe</option>
                       {users
-                        .filter(u => (u.role === 'manager' || u.role === 'hr') && u.uid !== editingUser.uid)
+                        .filter(u => (u.role === 'manager' || u.role === 'hr' || u.role === 'gerencia') && u.uid !== editingUser.uid)
                         .map(m => (
                           <option key={m.uid} value={m.uid}>{m.displayName} ({m.role})</option>
                         ))
                       }
                     </select>
                   </div>
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Fecha de Ingreso</label>
+                  <input 
+                    type="date" 
+                    value={editFormData.entryDate || ''} 
+                    onChange={(e) => setEditFormData({...editFormData, entryDate: e.target.value})}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1">Periodo Manual (Opcional)</label>
+                  <input 
+                    type="text" 
+                    value={editFormData.manualVacationPeriod || ''} 
+                    onChange={(e) => setEditFormData({...editFormData, manualVacationPeriod: e.target.value})}
+                    className="w-full px-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    placeholder="Ej: Enero 2023 - Enero 2024"
+                  />
                 </div>
                 <div className="grid grid-cols-3 gap-4">
                   <div>
@@ -502,6 +807,66 @@ export default function Admin() {
                 </button>
                 <button 
                   onClick={() => setUserToDelete(null)}
+                  className="w-full py-3 text-slate-500 font-bold hover:text-slate-700"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Admin Password Change Modal */}
+      <AnimatePresence>
+        {passwordUser && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
+            <motion.div 
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              className="bg-white rounded-2xl shadow-2xl w-full max-w-md overflow-hidden"
+            >
+              <div className="p-6 border-b border-slate-100 flex items-center justify-between">
+                <h2 className="text-xl font-bold text-slate-900">Cambiar Contraseña</h2>
+                <button onClick={() => setPasswordUser(null)} className="text-slate-400 hover:text-slate-600">
+                  <X size={24} />
+                </button>
+              </div>
+              
+              <div className="p-8 space-y-6">
+                <div className="text-center">
+                  <div className="bg-amber-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-600">
+                    <Key size={32} />
+                  </div>
+                  <p className="text-slate-600">Establecer nueva contraseña para:</p>
+                  <p className="font-bold text-slate-900">{passwordUser.displayName}</p>
+                  <p className="text-xs text-slate-400">{passwordUser.email}</p>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-semibold text-slate-700 mb-1.5">Nueva Contraseña</label>
+                  <input 
+                    type="password" 
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    placeholder="Mínimo 6 caracteres"
+                    className="w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none"
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className="p-6 bg-slate-50 flex flex-col gap-3">
+                <button 
+                  onClick={handleUpdatePassword}
+                  disabled={isUpdatingPassword || !newPassword}
+                  className="w-full py-3 bg-blue-600 text-white rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200 disabled:opacity-50"
+                >
+                  {isUpdatingPassword ? 'Actualizando...' : 'Actualizar Contraseña'}
+                </button>
+                <button 
+                  onClick={() => setPasswordUser(null)}
                   className="w-full py-3 text-slate-500 font-bold hover:text-slate-700"
                 >
                   Cancelar

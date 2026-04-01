@@ -8,7 +8,7 @@
         "uid": { "type": "string" },
         "displayName": { "type": "string" },
         "email": { "type": "string" },
-        "role": { "type": "string", "enum": ["employee", "manager", "hr"] },
+        "role": { "type": "string", "enum": ["employee", "manager", "hr", "gerencia"] },
         "position": { "type": "string" },
         "managerUid": { "type": "string" },
         "entryDate": { "type": "string", "format": "date" },
@@ -29,14 +29,47 @@
         "type": { "type": "string", "enum": ["vacation", "permission"] },
         "startDate": { "type": "string", "format": "date" },
         "endDate": { "type": "string", "format": "date" },
-        "status": { "type": "string", "enum": ["pending_manager", "pending_hr", "approved", "rejected"] },
+        "status": { "type": "string", "enum": ["pending_manager", "pending_gerencia", "pending_replacement", "pending_hr", "approved", "rejected", "cancelled"] },
         "reason": { "type": "string" },
         "createdAt": { "type": "string", "format": "date-time" },
         "updatedAt": { "type": "string", "format": "date-time" },
         "managerApproverUid": { "type": "string" },
-        "hrApproverUid": { "type": "string" }
+        "gerenciaApproverUid": { "type": "string" },
+        "hrApproverUid": { "type": "string" },
+        "replacementUid": { "type": "string" },
+        "replacementName": { "type": "string" },
+        "replacementApproverUid": { "type": "string" },
+        "cancellationReason": { "type": "string" },
+        "cancelledAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userUid", "type", "startDate", "endDate", "status"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Log of administrative changes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "adminUid": { "type": "string" },
+        "adminName": { "type": "string" },
+        "targetUid": { "type": "string" },
+        "targetName": { "type": "string" },
+        "action": { "type": "string", "enum": ["update_user", "delete_user", "update_password", "recalculate_balance"] },
+        "changes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "field": { "type": "string" },
+              "oldValue": { "type": "any" },
+              "newValue": { "type": "any" }
+            }
+          }
+        },
+        "ipAddress": { "type": "string" }
+      },
+      "required": ["timestamp", "adminUid", "action", "ipAddress"]
     }
   },
   "firestore": {
@@ -47,6 +80,10 @@
     "/requests/{requestId}": {
       "schema": "Request",
       "description": "Vacation and permission requests"
+    },
+    "/audit_logs/{logId}": {
+      "schema": "AuditLog",
+      "description": "Administrative audit logs"
     }
   }
 }

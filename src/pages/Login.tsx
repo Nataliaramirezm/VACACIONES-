@@ -37,7 +37,7 @@ export default function Login() {
           <div className="bg-blue-600 w-12 h-12 rounded-xl flex items-center justify-center mx-auto mb-4 text-white shadow-lg shadow-blue-200">
             <LogIn size={24} />
           </div>
-          <h1 className="text-2xl font-bold text-slate-900">Bienvenido de nuevo</h1>
+          <h1 className="text-2xl font-bold text-slate-900">Bienvenido a tus vacaciones</h1>
           <p className="text-slate-500 mt-2">Ingresa tus credenciales para continuar</p>
         </div>
 

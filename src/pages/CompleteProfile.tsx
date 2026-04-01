@@ -30,15 +30,13 @@ export default function CompleteProfile() {
   }, [profile, navigate]);
 
   useEffect(() => {
-    if (isSuperAdmin) {
-      setRole('hr');
-    }
+    // No longer forcing role to 'hr' for super admins
   }, [isSuperAdmin]);
 
   useEffect(() => {
     const fetchManagers = async () => {
       try {
-        const q = query(collection(db, 'users'), where('role', 'in', ['manager', 'hr']));
+        const q = query(collection(db, 'users'), where('role', 'in', ['manager', 'hr', 'gerencia']));
         const querySnapshot = await getDocs(q);
         const managersList = querySnapshot.docs.map(doc => ({
           uid: doc.id,
@@ -68,11 +66,11 @@ export default function CompleteProfile() {
         displayName,
         position,
         entryDate,
-        role: isSuperAdmin ? 'hr' : role,
-        managerUid: (isSuperAdmin || role !== 'employee') ? '' : managerUid,
+        role: role,
+        managerUid: (role !== 'employee') ? '' : managerUid,
         totalVacationDays: total,
         usedVacationDays: 0,
-        pendingVacationDays: total,
+        pendingVacationDays: 0,
       };
 
       await setDoc(doc(db, 'users', auth.currentUser.uid), newUser);
@@ -164,6 +162,7 @@ export default function CompleteProfile() {
               >
                 <option value="employee">Empleado</option>
                 <option value="manager">Jefe Inmediato</option>
+                <option value="gerencia">Gerencia</option>
                 <option value="hr">Talento Humano (RRHH)</option>
               </select>
               {isSuperAdmin && (

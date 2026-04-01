@@ -1,23 +1,44 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
-import { calculateAnnualVacationDays } from '../lib/vacation';
-import { addDoc, collection, serverTimestamp } from 'firebase/firestore';
+import { calculateAnnualVacationDays, calculateTotalEarnedDays, calculateVacationPeriod, calculatePeriodToUse } from '../lib/vacation';
+import { addDoc, collection, getDocs, query, where, doc, updateDoc, increment } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
-import { Calendar, Clock, CheckCircle, XCircle, Plus, Send, Info } from 'lucide-react';
+import { Calendar, Clock, CheckCircle, XCircle, Plus, Send, Info, Users, RotateCcw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { RequestType } from '../types';
+import { RequestType, UserProfile, VacationRequest, RequestStatus } from '../types';
+import { toast, Toaster } from 'sonner';
+import { formatDate, parseDate } from '../lib/vacation';
 
 export default function Dashboard() {
   const { profile } = useAuth();
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [users, setUsers] = useState<UserProfile[]>([]);
   const [formData, setFormData] = useState({
     type: 'vacation' as RequestType,
     startDate: '',
     endDate: '',
     reason: '',
+    replacementUid: '',
+    gerenciaUid: '',
   });
   const [loading, setLoading] = useState(false);
   const [success, setSuccess] = useState(false);
+
+  useEffect(() => {
+    const fetchUsers = async () => {
+      try {
+        const q = query(collection(db, 'users'));
+        const snapshot = await getDocs(q);
+        const usersList = snapshot.docs
+          .map(doc => doc.data() as UserProfile)
+          .filter(u => u.uid !== profile?.uid); // Don't allow self-replacement
+        setUsers(usersList);
+      } catch (error) {
+        console.error("Error fetching users:", error);
+      }
+    };
+    if (isModalOpen) fetchUsers();
+  }, [isModalOpen, profile?.uid]);
 
   if (!profile) return (
     <div className="flex flex-col items-center justify-center h-64 space-y-4">
@@ -35,23 +56,64 @@ export default function Dashboard() {
     e.preventDefault();
     setLoading(true);
     try {
+      const replacement = users.find(u => u.uid === formData.replacementUid);
+      
+      const start = parseDate(formData.startDate);
+      const end = parseDate(formData.endDate);
+      const diffTime = Math.abs(end.getTime() - start.getTime());
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+      if (formData.type === 'vacation') {
+        const balance = profile.totalVacationDays - profile.usedVacationDays - profile.pendingVacationDays;
+        if (diffDays > balance) {
+          toast.error(`Saldo insuficiente. Tienes ${balance} días disponibles y solicitaste ${diffDays}.`);
+          setLoading(false);
+          return;
+        }
+      }
+
+      let initialStatus: RequestStatus = 'pending_manager';
+      let requestManagerUid = profile.managerUid || '';
+
+      if (profile.role === 'manager') {
+        initialStatus = 'pending_gerencia';
+        requestManagerUid = profile.managerUid || formData.gerenciaUid;
+        if (!requestManagerUid) {
+          toast.error('Debes tener un Gerente asignado o seleccionarlo.');
+          setLoading(false);
+          return;
+        }
+      } else if (profile.role === 'gerencia' || profile.role === 'hr') {
+        initialStatus = 'pending_replacement';
+      }
+
       await addDoc(collection(db, 'requests'), {
         userUid: profile.uid,
         userName: profile.displayName,
-        managerUid: profile.managerUid || '',
+        managerUid: requestManagerUid,
+        replacementUid: formData.replacementUid,
+        replacementName: replacement?.displayName || 'No asignado',
         type: formData.type,
         startDate: formData.startDate,
         endDate: formData.endDate,
         reason: formData.reason,
-        status: 'pending_manager',
+        status: initialStatus,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       });
+
+      if (formData.type === 'vacation') {
+        const userRef = doc(db, 'users', profile.uid);
+        await updateDoc(userRef, {
+          pendingVacationDays: increment(diffDays)
+        });
+      }
+
       setSuccess(true);
       setTimeout(() => {
         setIsModalOpen(false);
         setSuccess(false);
-        setFormData({ type: 'vacation', startDate: '', endDate: '', reason: '' });
+        setFormData({ type: 'vacation', startDate: '', endDate: '', reason: '', replacementUid: '', gerenciaUid: '' });
       }, 2000);
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'requests');
@@ -60,60 +122,136 @@ export default function Dashboard() {
     }
   };
 
+  const recalculateBalance = async () => {
+    if (!profile) return;
+    const promise = async () => {
+      const q = query(collection(db, 'requests'), where('userUid', '==', profile.uid));
+      const snapshot = await getDocs(q);
+      const requests = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as VacationRequest));
+      
+      let used = 0;
+      let pending = 0;
+      
+      requests.forEach(req => {
+        if (req.type === 'vacation' && req.status !== 'rejected' && req.status !== 'cancelled') {
+          const start = parseDate(req.startDate);
+          const end = parseDate(req.endDate);
+          const diffTime = Math.abs(end.getTime() - start.getTime());
+          const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+          
+          if (req.status === 'approved') {
+            used += diffDays;
+          } else if (req.status.startsWith('pending_')) {
+            pending += diffDays;
+          }
+        }
+      });
+      
+      const annualDays = calculateTotalEarnedDays(profile.entryDate);
+      
+      const userRef = doc(db, 'users', profile.uid);
+      await updateDoc(userRef, {
+        usedVacationDays: used,
+        pendingVacationDays: pending,
+        totalVacationDays: annualDays
+      });
+    };
+
+    toast.promise(promise(), {
+      loading: 'Recalculando saldos...',
+      success: 'Saldos actualizados correctamente',
+      error: 'Error al recalcular saldos'
+    });
+  };
+
   return (
     <div className="space-y-8">
+      <Toaster position="top-right" richColors />
       <header className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-slate-900">Hola, {profile.displayName}</h1>
-          <p className="text-slate-500">Gestiona tus vacaciones y permisos desde aquí.</p>
+          <div className="flex flex-wrap items-center gap-2 mt-1">
+            <p className="text-slate-500">Gestiona tus vacaciones y permisos desde aquí.</p>
+            <div className="flex gap-2">
+              <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-amber-200">
+                A Utilizar: {profile.manualVacationPeriod || calculatePeriodToUse(profile.entryDate, profile.usedVacationDays)}
+              </span>
+              <span className="bg-blue-100 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-blue-200">
+                En Acumulación: {calculateVacationPeriod(profile.entryDate)}
+              </span>
+            </div>
+          </div>
         </div>
-        <button 
-          onClick={() => setIsModalOpen(true)}
-          className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all flex items-center justify-center gap-2"
-        >
-          <Plus size={20} />
-          Nueva Solicitud
-        </button>
+        <div className="flex items-center gap-3">
+          <button 
+            onClick={recalculateBalance}
+            className="flex items-center gap-2 px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold transition-all text-xs"
+            title="Recalcular saldos si ves valores incorrectos"
+          >
+            <RotateCcw size={14} />
+            Recalcular Saldo
+          </button>
+          <button 
+            onClick={() => setIsModalOpen(true)}
+            className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-bold shadow-lg shadow-blue-200 transition-all flex items-center justify-center gap-2"
+          >
+            <Plus size={20} />
+            Nueva Solicitud
+          </button>
+        </div>
       </header>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <motion.div 
           whileHover={{ y: -5 }}
-          className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5"
+          className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4"
         >
-          <div className="bg-blue-50 p-4 rounded-xl text-blue-600">
-            <Calendar size={28} />
+          <div className="bg-blue-50 p-3 rounded-xl text-blue-600">
+            <Calendar size={24} />
           </div>
           <div>
-            <p className="text-sm font-medium text-slate-500">Derecho Anual</p>
-            <p className="text-2xl font-bold text-slate-900">{annualDays} días</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Total Ganados</p>
+            <p className="text-xl font-bold text-slate-900">{profile.totalVacationDays} días</p>
           </div>
         </motion.div>
 
         <motion.div 
           whileHover={{ y: -5 }}
-          className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5"
+          className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4"
         >
-          <div className="bg-green-50 p-4 rounded-xl text-green-600">
-            <CheckCircle size={28} />
+          <div className="bg-green-50 p-3 rounded-xl text-green-600">
+            <CheckCircle size={24} />
           </div>
           <div>
-            <p className="text-sm font-medium text-slate-500">Días Usados</p>
-            <p className="text-2xl font-bold text-slate-900">{profile.usedVacationDays} días</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Días Usados</p>
+            <p className="text-xl font-bold text-slate-900">{profile.usedVacationDays} días</p>
           </div>
         </motion.div>
 
         <motion.div 
           whileHover={{ y: -5 }}
-          className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-5"
+          className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4"
         >
-          <div className="bg-orange-50 p-4 rounded-xl text-orange-600">
-            <Clock size={28} />
+          <div className="bg-orange-50 p-3 rounded-xl text-orange-600">
+            <Clock size={24} />
           </div>
           <div>
-            <p className="text-sm font-medium text-slate-500">Días Pendientes</p>
-            <p className="text-2xl font-bold text-slate-900">{profile.pendingVacationDays} días</p>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">En Trámite</p>
+            <p className="text-xl font-bold text-slate-900">{profile.pendingVacationDays} días</p>
+          </div>
+        </motion.div>
+
+        <motion.div 
+          whileHover={{ y: -5 }}
+          className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100 flex items-center gap-4 ring-2 ring-blue-600 ring-offset-2"
+        >
+          <div className="bg-blue-600 p-3 rounded-xl text-white">
+            <Info size={24} />
+          </div>
+          <div>
+            <p className="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Saldo Disponible</p>
+            <p className="text-xl font-bold text-blue-600">{profile.totalVacationDays - profile.usedVacationDays - profile.pendingVacationDays} días</p>
           </div>
         </motion.div>
       </div>
@@ -196,6 +334,50 @@ export default function Dashboard() {
                       />
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">Reemplazo (Persona que cubrirá tus funciones)</label>
+                    <div className="relative">
+                      <Users className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <select
+                        value={formData.replacementUid}
+                        onChange={(e) => setFormData({ ...formData, replacementUid: e.target.value })}
+                        className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none"
+                        required
+                      >
+                        <option value="">Selecciona un reemplazo...</option>
+                        {users.map(user => (
+                          <option key={user.uid} value={user.uid}>
+                            {user.displayName} ({user.position})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  {profile.role === 'manager' && !profile.managerUid && (
+                    <div>
+                      <label className="block text-sm font-semibold text-slate-700 mb-1.5">Gerencia (Quién aprobará tu solicitud)</label>
+                      <div className="relative">
+                        <Users className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                        <select
+                          value={formData.gerenciaUid}
+                          onChange={(e) => setFormData({ ...formData, gerenciaUid: e.target.value })}
+                          className="w-full pl-10 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:ring-2 focus:ring-blue-500 outline-none appearance-none"
+                          required
+                        >
+                          <option value="">Selecciona Gerencia...</option>
+                          {users
+                            .filter(u => u.role === 'gerencia')
+                            .map(user => (
+                              <option key={user.uid} value={user.uid}>
+                                {user.displayName} ({user.position})
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                    </div>
+                  )}
 
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Motivo / Observaciones</label>

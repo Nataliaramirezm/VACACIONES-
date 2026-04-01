@@ -7,6 +7,7 @@ import { UserProfile } from './types';
 import { LogOut, User as UserIcon, Calendar, ClipboardList, Settings, Menu, X, FileText, AlertTriangle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getDocFromServer } from 'firebase/firestore';
+import { Toaster } from 'sonner';
 
 // --- Error Boundary ---
 class ErrorBoundary extends Component<any, any> {
@@ -61,6 +62,7 @@ interface AuthContextType {
   loading: boolean;
   isHR: boolean;
   isManager: boolean;
+  isGerencia: boolean;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -69,13 +71,14 @@ const AuthContext = createContext<AuthContextType>({
   loading: true,
   isHR: false,
   isManager: false,
+  isGerencia: false,
 });
 
 export const useAuth = () => useContext(AuthContext);
 
 // --- Components ---
 const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { user, profile, isHR, isManager } = useAuth();
+  const { user, profile, isHR, isManager, isGerencia } = useAuth();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const navigate = useNavigate();
 
@@ -109,16 +112,16 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
             <FileText size={20} />
             <span>Mis Solicitudes</span>
           </Link>
-          {(isHR || isManager) && (
+          {(isHR || isGerencia || isManager) && (
             <Link to="/manage" className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-slate-800 transition-colors">
               <Settings size={20} />
               <span>Gestionar</span>
             </Link>
           )}
-          {isHR && (
+          {(isHR || isGerencia) && (
             <Link to="/admin" className="flex items-center gap-3 px-4 py-3 rounded-lg hover:bg-slate-800 transition-colors">
               <Settings size={20} />
-              <span>Admin (RRHH)</span>
+              <span>Administración</span>
             </Link>
           )}
           
@@ -127,7 +130,7 @@ const Layout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
               <UserIcon size={20} />
               <div className="overflow-hidden">
                 <p className="text-sm font-medium text-white truncate">{profile?.displayName || 'Usuario'}</p>
-                <p className="text-xs truncate">{(user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec' ? 'hr' : profile?.role)?.toUpperCase() || 'SIN PERFIL'}</p>
+                <p className="text-xs truncate">{profile?.role?.toUpperCase() || 'SIN PERFIL'}</p>
               </div>
             </div>
             <button 
@@ -226,12 +229,14 @@ export default function App() {
     user,
     profile,
     loading,
-    isHR: profile?.role === 'hr' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
-    isManager: profile?.role === 'manager',
+    isHR: profile?.role === 'hr' || profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
+    isManager: profile?.role === 'manager' || profile?.role === 'gerencia' || profile?.role === 'hr' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
+    isGerencia: profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
   };
 
   return (
     <ErrorBoundary>
+      <Toaster position="top-right" richColors />
       <AuthContext.Provider value={value}>
         <Router>
           <Layout>

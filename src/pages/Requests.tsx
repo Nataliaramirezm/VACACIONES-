@@ -1,11 +1,13 @@
 import React, { useEffect, useState } from 'react';
 import { useAuth } from '../App';
-import { collection, query, where, onSnapshot, orderBy } from 'firebase/firestore';
+import { collection, query, where, onSnapshot, orderBy, doc, updateDoc, getDoc, increment } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { VacationRequest } from '../types';
-import { FileDown, Clock, CheckCircle, XCircle, Calendar, AlertCircle } from 'lucide-react';
+import { FileDown, Clock, CheckCircle, XCircle, Calendar, AlertCircle, Ban } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { generateRequestPDF } from '../lib/pdf';
+import { toast, Toaster } from 'sonner';
+import { formatDate, parseDate } from '../lib/vacation';
 
 export default function Requests() {
   const { profile, user } = useAuth();
@@ -33,12 +35,71 @@ export default function Requests() {
     return () => unsubscribe();
   }, [user]);
 
+  const [cancellingId, setCancellingId] = useState<string | null>(null);
+  const [cancellationReason, setCancellationReason] = useState('');
+
+  const handleCancel = async (request: VacationRequest) => {
+    if (!cancellationReason.trim()) {
+      toast.error('Por favor, ingresa el motivo de la cancelación');
+      return;
+    }
+
+    const promise = async () => {
+      const requestRef = doc(db, 'requests', request.id);
+      
+      try {
+        await updateDoc(requestRef, {
+          status: 'cancelled',
+          cancellationReason: cancellationReason.trim(),
+          cancelledAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        });
+
+        // If it's a vacation, we need to return the days
+        if (request.type === 'vacation') {
+          const userRef = doc(db, 'users', request.userUid);
+          const userSnap = await getDoc(userRef);
+          if (userSnap.exists()) {
+            const start = parseDate(request.startDate);
+            const end = parseDate(request.endDate);
+            const diffTime = Math.abs(end.getTime() - start.getTime());
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+
+            if (request.status === 'approved') {
+              await updateDoc(userRef, {
+                usedVacationDays: increment(-diffDays),
+              });
+            } else if (request.status.startsWith('pending_')) {
+              await updateDoc(userRef, {
+                pendingVacationDays: increment(-diffDays),
+              });
+            }
+          }
+        }
+        setCancellingId(null);
+        setCancellationReason('');
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `requests/${request.id}`);
+        throw err;
+      }
+    };
+
+    toast.promise(promise(), {
+      loading: 'Cancelando solicitud...',
+      success: 'Solicitud cancelada correctamente',
+      error: 'Error al cancelar la solicitud',
+    });
+  };
+
   const getStatusLabel = (status: string) => {
     switch (status) {
       case 'pending_manager': return 'Pendiente Jefe';
+      case 'pending_gerencia': return 'Pendiente Gerencia';
+      case 'pending_replacement': return 'Pendiente Reemplazo';
       case 'pending_hr': return 'Pendiente RRHH';
       case 'approved': return 'Aprobado';
       case 'rejected': return 'Rechazado';
+      case 'cancelled': return 'Cancelado';
       default: return status.toUpperCase();
     }
   };
@@ -47,7 +108,10 @@ export default function Requests() {
     switch (status) {
       case 'approved': return 'bg-green-100 text-green-700 border-green-200';
       case 'rejected': return 'bg-red-100 text-red-700 border-red-200';
+      case 'cancelled': return 'bg-slate-100 text-slate-700 border-slate-200';
+      case 'pending_gerencia': return 'bg-indigo-100 text-indigo-700 border-indigo-200';
       case 'pending_hr': return 'bg-blue-100 text-blue-700 border-blue-200';
+      case 'pending_replacement': return 'bg-purple-100 text-purple-700 border-purple-200';
       default: return 'bg-orange-100 text-orange-700 border-orange-200';
     }
   };
@@ -56,6 +120,7 @@ export default function Requests() {
     switch (status) {
       case 'approved': return <CheckCircle size={16} />;
       case 'rejected': return <XCircle size={16} />;
+      case 'cancelled': return <Ban size={16} />;
       default: return <Clock size={16} />;
     }
   };
@@ -64,6 +129,7 @@ export default function Requests() {
 
   return (
     <div className="space-y-6">
+      <Toaster position="top-right" richColors />
       <header>
         <h1 className="text-3xl font-bold text-slate-900">Mis Solicitudes</h1>
         <p className="text-slate-500">Historial de tus vacaciones y permisos solicitados.</p>
@@ -101,13 +167,56 @@ export default function Requests() {
                     </div>
                     <p className="text-sm text-slate-500 flex items-center gap-2">
                       <Calendar size={14} />
-                      {new Date(req.startDate).toLocaleDateString()} - {new Date(req.endDate).toLocaleDateString()}
+                      {formatDate(req.startDate)} - {formatDate(req.endDate)}
                     </p>
                     <p className="text-sm text-slate-600 mt-2 line-clamp-1">{req.reason}</p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3">
+                <div className="flex flex-col md:items-end gap-3">
+                  {req.status !== 'cancelled' && req.status !== 'rejected' && (
+                    <>
+                      {cancellingId === req.id ? (
+                        <motion.div 
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          className="flex flex-col gap-2 w-full md:w-64"
+                        >
+                          <textarea
+                            placeholder="Motivo de cancelación..."
+                            value={cancellationReason}
+                            onChange={(e) => setCancellationReason(e.target.value)}
+                            className="w-full p-2 text-xs border border-red-200 rounded-lg focus:ring-1 focus:ring-red-500 outline-none resize-none h-20"
+                          />
+                          <div className="flex items-center gap-2">
+                            <button 
+                              onClick={() => handleCancel(req)}
+                              className="flex-1 px-3 py-1.5 rounded-lg bg-red-600 text-white text-xs font-bold hover:bg-red-700 transition-colors"
+                            >
+                              Confirmar Cancelación
+                            </button>
+                            <button 
+                              onClick={() => {
+                                setCancellingId(null);
+                                setCancellationReason('');
+                              }}
+                              className="px-3 py-1.5 rounded-lg bg-slate-100 text-slate-600 text-xs font-bold hover:bg-slate-200 transition-colors"
+                            >
+                              No
+                            </button>
+                          </div>
+                        </motion.div>
+                      ) : (
+                        <button 
+                          onClick={() => setCancellingId(req.id)}
+                          className="flex items-center gap-2 px-4 py-2 rounded-lg bg-red-50 hover:bg-red-100 text-red-600 font-medium transition-all text-sm border border-red-100"
+                        >
+                          <Ban size={18} />
+                          Cancelar
+                        </button>
+                      )}
+                    </>
+                  )}
                   <button 
                     onClick={() => profile && generateRequestPDF(req, profile)}
                     className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 font-medium transition-all text-sm border border-slate-200"

@@ -22,7 +22,7 @@ service cloud.firestore {
     
     function isAdmin() {
       return isAuthenticated() && (
-        (userExists() && getUserData().role == 'hr') ||
+        (userExists() && (getUserData().role == 'hr' || getUserData().role == 'gerencia')) ||
         (request.auth.token.email == "nmrm01@gmail.com" && request.auth.token.email_verified == true) ||
         (request.auth.token.email == "asis.tthh@compufacil.com.ec" && request.auth.token.email_verified == true)
       );
@@ -33,7 +33,11 @@ service cloud.firestore {
     }
     
     function isManager() {
-      return isAuthenticated() && userExists() && getUserData().role == 'manager';
+      return isAuthenticated() && userExists() && (getUserData().role == 'manager' || getUserData().role == 'gerencia');
+    }
+
+    function isGerencia() {
+      return isAuthenticated() && userExists() && getUserData().role == 'gerencia';
     }
 
     function hasRequiredFields(fields) {
@@ -48,18 +52,25 @@ service cloud.firestore {
     // Domain Validators
     // ===============================================================
     function isValidUser(data) {
-      return hasOnlyAllowedFields(['uid', 'displayName', 'email', 'role', 'position', 'managerUid', 'entryDate', 'totalVacationDays', 'usedVacationDays', 'pendingVacationDays']) &&
+      return hasOnlyAllowedFields(['uid', 'displayName', 'email', 'role', 'position', 'managerUid', 'entryDate', 'totalVacationDays', 'usedVacationDays', 'pendingVacationDays', 'manualVacationPeriod']) &&
              data.uid is string &&
+             data.displayName is string &&
              data.email is string &&
-             data.role in ['employee', 'manager', 'hr'] &&
-             data.entryDate is string;
+             data.role in ['employee', 'manager', 'hr', 'gerencia'] &&
+             data.position is string &&
+             (!('managerUid' in data) || data.managerUid is string) &&
+             data.entryDate is string &&
+             data.totalVacationDays is number &&
+             data.usedVacationDays is number &&
+             data.pendingVacationDays is number &&
+             (!('manualVacationPeriod' in data) || data.manualVacationPeriod is string);
     }
 
     function isValidRequest(data) {
-      return hasOnlyAllowedFields(['id', 'userUid', 'userName', 'type', 'startDate', 'endDate', 'status', 'reason', 'createdAt', 'updatedAt', 'managerApproverUid', 'hrApproverUid', 'managerUid']) &&
+      return hasOnlyAllowedFields(['id', 'userUid', 'userName', 'type', 'startDate', 'endDate', 'status', 'reason', 'createdAt', 'updatedAt', 'managerApproverUid', 'gerenciaApproverUid', 'hrApproverUid', 'replacementApproverUid', 'managerUid', 'replacementUid', 'replacementName', 'managerApproverName', 'gerenciaApproverName', 'hrApproverName', 'replacementApproverName', 'cancellationReason', 'cancelledAt']) &&
              data.userUid is string &&
              data.type in ['vacation', 'permission'] &&
-             data.status in ['pending_manager', 'pending_hr', 'approved', 'rejected'] &&
+             data.status in ['pending_manager', 'pending_gerencia', 'pending_replacement', 'pending_hr', 'approved', 'rejected', 'cancelled'] &&
              data.startDate is string &&
              data.endDate is string;
     }
@@ -70,9 +81,9 @@ service cloud.firestore {
 
     // User Profiles
     match /users/{userId} {
-      allow read: if isOwner(userId) || isHR() || isManager();
+      allow read: if isAuthenticated() || (resource.data.role in ['manager', 'hr', 'gerencia']);
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if (isOwner(userId) || isHR()) && isValidUser(request.resource.data);
+      allow update: if (isOwner(userId) || isHR() || isGerencia()) && isValidUser(request.resource.data);
       allow delete: if isHR() && 
                       get(/databases/$(database)/documents/users/$(userId)).data.email != 'nmrm01@gmail.com' &&
                       get(/databases/$(database)/documents/users/$(userId)).data.email != 'asis.tthh@compufacil.com.ec';
@@ -83,15 +94,26 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (
         request.auth.uid == resource.data.userUid || 
         isHR() || 
-        (isManager() && (resource.data.managerUid == request.auth.uid || resource.data.userUid == request.auth.uid))
+        isGerencia() ||
+        (isManager() && (resource.data.managerUid == request.auth.uid || resource.data.userUid == request.auth.uid)) ||
+        (resource.data.replacementUid == request.auth.uid)
       );
       allow create: if isAuthenticated() && request.resource.data.userUid == request.auth.uid && isValidRequest(request.resource.data);
       allow update: if isAuthenticated() && isValidRequest(request.resource.data) && (
         isHR() || 
+        isGerencia() ||
         (isManager() && resource.data.managerUid == request.auth.uid && resource.data.status == 'pending_manager') ||
-        (isOwner(resource.data.userUid) && resource.data.status == 'pending_manager')
+        (resource.data.replacementUid == request.auth.uid && resource.data.status == 'pending_replacement') ||
+        (resource.data.userUid == request.auth.uid && resource.data.status != 'rejected' && resource.data.status != 'cancelled')
       );
       allow delete: if isHR();
+    }
+
+    // Audit Logs
+    match /audit_logs/{logId} {
+      allow read: if isAdmin();
+      allow create: if false; // Only server-side via Admin SDK
+      allow update, delete: if false; // Immutable
     }
   }
 }
