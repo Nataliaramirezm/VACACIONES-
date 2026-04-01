@@ -76,6 +76,14 @@ export const generateRequestPDF = (request: VacationRequest, user: UserProfile) 
   doc.setFont('helvetica', 'normal');
   doc.text(formatDate(request.createdAt.split('T')[0]), margin + 42, y);
 
+  if (request.replacementName) {
+    y += 8;
+    doc.setFont('helvetica', 'bold');
+    doc.text('REEMPLAZO:', margin + 5, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(request.replacementName.toUpperCase(), margin + 42, y);
+  }
+
   y += 10;
   doc.setFont('helvetica', 'bold');
   doc.text('TOTAL DIAS', margin + 5, y);

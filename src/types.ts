@@ -42,21 +42,3 @@ export interface VacationRequest {
   cancellationReason?: string;
   cancelledAt?: string;
 }
-
-export interface AuditLog {
-  id: string;
-  timestamp: string;
-  adminUid: string;
-  adminName: string;
-  adminEmail: string;
-  targetUid: string;
-  targetName: string;
-  targetEmail: string;
-  action: 'update_user' | 'delete_user' | 'update_password' | 'recalculate_balance';
-  changes: {
-    field: string;
-    oldValue: any;
-    newValue: any;
-  }[];
-  ip: string;
-}

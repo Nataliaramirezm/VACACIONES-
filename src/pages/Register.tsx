@@ -6,7 +6,7 @@ import { useNavigate, Link } from 'react-router-dom';
 import { UserPlus, Mail, Lock, User, Briefcase, Calendar, AlertCircle, ChevronRight, Users } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { UserRole, UserProfile } from '../types';
-import { calculateAnnualVacationDays } from '../lib/vacation';
+import { calculateTotalEarnedDays } from '../lib/vacation';
 
 export default function Register() {
   const [formData, setFormData] = useState({
@@ -46,7 +46,7 @@ export default function Register() {
       const userCredential = await createUserWithEmailAndPassword(auth, formData.email, formData.password);
       const user = userCredential.user;
 
-      const annualDays = calculateAnnualVacationDays(formData.entryDate);
+      const totalEarned = calculateTotalEarnedDays(formData.entryDate);
 
           try {
             await setDoc(doc(db, 'users', user.uid), {
@@ -57,7 +57,7 @@ export default function Register() {
               entryDate: formData.entryDate,
               role: formData.role,
               managerUid: formData.role === 'employee' ? formData.managerUid : '',
-              totalVacationDays: annualDays,
+              totalVacationDays: totalEarned,
               usedVacationDays: 0,
               pendingVacationDays: 0,
             });

@@ -4,22 +4,23 @@ import { useNavigate } from 'react-router-dom';
 import { collection, onSnapshot, doc, updateDoc, getDocs, query, where, deleteDoc, getDoc } from 'firebase/firestore';
 import { signOut } from 'firebase/auth';
 import { db, auth, handleFirestoreError, OperationType } from '../firebase';
-import { UserProfile, UserRole, AuditLog } from '../types';
-import { Users, FileUp, Download, Search, AlertCircle, CheckCircle, Save, Trash2, Edit2, X, RotateCcw, Key, ClipboardList, History } from 'lucide-react';
+import { UserProfile, UserRole } from '../types';
+import { Users, FileUp, Download, Search, AlertCircle, CheckCircle, Save, Trash2, Edit2, X, RotateCcw, Key } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import * as XLSX from 'xlsx';
 import { toast, Toaster } from 'sonner';
-import { calculateTotalEarnedDays, formatDate, parseDate, calculateVacationPeriod, calculatePeriodToUse } from '../lib/vacation';
+import { calculateTotalEarnedDays, formatDate, parseDate, calculateVacationPeriod, calculatePeriodToUse, calculateProportionalDays } from '../lib/vacation';
 
 export default function Admin() {
   const { profile } = useAuth();
   const navigate = useNavigate();
   const [users, setUsers] = useState<UserProfile[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [uploadStatus, setUploadStatus] = useState<{ type: 'success' | 'error', message: string } | null>(null);
-  const [showLogs, setShowLogs] = useState(false);
+  
+  const isSuperAdmin = profile?.email === 'nmrm01@gmail.com';
+  const canEdit = profile?.role === 'gerencia' || isSuperAdmin;
   
   // Edit Modal State
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
@@ -54,15 +55,7 @@ export default function Admin() {
       setLoading(false);
     });
 
-    const logsUnsubscribe = onSnapshot(query(collection(db, 'audit_logs'), where('timestamp', '>=', new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString())), (snapshot) => {
-      const logs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as AuditLog));
-      setAuditLogs(logs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()));
-    });
-
-    return () => {
-      unsubscribe();
-      logsUnsubscribe();
-    };
+    return () => unsubscribe();
   }, [profile]);
 
   const handleExportRequests = async () => {
@@ -137,15 +130,7 @@ export default function Admin() {
             if (row.position !== undefined) updateData.position = row.position;
             if (row.manualVacationPeriod !== undefined) updateData.manualVacationPeriod = String(row.manualVacationPeriod);
 
-            await fetch('/api/admin/update-user', {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({
-                adminUid: profile?.uid,
-                targetUid: userDoc.id,
-                updates: updateData
-              })
-            });
+            await updateDoc(userRef, updateData);
             updatedCount++;
           } else {
             errorCount++;
@@ -166,37 +151,18 @@ export default function Admin() {
 
   const handleRoleChange = async (uid: string, newRole: UserRole) => {
     try {
-      await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          adminUid: profile?.uid,
-          targetUid: uid,
-          updates: { role: newRole }
-        })
-      });
-      toast.success('Rol actualizado correctamente');
+      await updateDoc(doc(db, 'users', uid), { role: newRole });
     } catch (error) {
-      console.error('Error updating role:', error);
-      toast.error('Error al actualizar rol');
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
     }
   };
 
   const handleManagerChange = async (uid: string, newManagerUid: string) => {
     try {
-      await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          adminUid: profile?.uid,
-          targetUid: uid,
-          updates: { managerUid: newManagerUid }
-        })
-      });
+      await updateDoc(doc(db, 'users', uid), { managerUid: newManagerUid });
       toast.success('Jefe actualizado correctamente');
     } catch (error) {
-      console.error('Error updating manager:', error);
-      toast.error('Error al actualizar jefe');
+      handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
     }
   };
 
@@ -237,7 +203,7 @@ export default function Admin() {
       const response = await fetch('/api/delete-user', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: userToDelete, adminUid: profile?.uid }),
+        body: JSON.stringify({ uid: userToDelete }),
       });
       
       const data = await response.json();
@@ -274,34 +240,25 @@ export default function Admin() {
       usedVacationDays: user.usedVacationDays,
       pendingVacationDays: user.pendingVacationDays,
       managerUid: user.managerUid || '',
-      entryDate: user.entryDate,
-      manualVacationPeriod: user.manualVacationPeriod || '',
     });
   };
 
   const handleSaveEdit = async () => {
     if (!editingUser) return;
     const promise = async () => {
-      const response = await fetch('/api/admin/update-user', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          adminUid: profile?.uid,
-          targetUid: editingUser.uid,
-          updates: editFormData
-        })
-      });
-      
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error);
-      
-      setEditingUser(null);
+      try {
+        const userRef = doc(db, 'users', editingUser.uid);
+        await updateDoc(userRef, editFormData);
+        setEditingUser(null);
+      } catch (err) {
+        handleFirestoreError(err, OperationType.UPDATE, `users/${editingUser.uid}`);
+      }
     };
 
     toast.promise(promise(), {
       loading: 'Guardando cambios...',
       success: 'Usuario actualizado correctamente',
-      error: (err) => err.message || 'Error al actualizar usuario',
+      error: 'Error al actualizar usuario',
     });
   };
 
@@ -359,14 +316,6 @@ export default function Admin() {
         
         <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowLogs(true)}
-            className="bg-slate-50 border border-slate-200 hover:border-slate-500 text-slate-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
-          >
-            <History size={20} className="text-slate-600" />
-            <span>Ver Bitácora</span>
-          </button>
-
-          <button
             onClick={handleExportRequests}
             className="bg-emerald-50 border border-emerald-200 hover:border-emerald-500 text-emerald-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
           >
@@ -377,21 +326,45 @@ export default function Admin() {
           <button
             onClick={async () => {
               const promise = async () => {
-                const response = await fetch('/api/admin/recalculate-all', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ adminUid: profile?.uid })
-                });
+                const usersSnap = await getDocs(collection(db, 'users'));
+                const requestsSnap = await getDocs(collection(db, 'requests'));
+                const allRequests = requestsSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
                 
-                const data = await response.json();
-                if (!response.ok) throw new Error(data.error || 'Error al recalcular');
-                return data;
+                for (const userDoc of usersSnap.docs) {
+                  const userData = userDoc.data() as UserProfile;
+                  const userRequests = allRequests.filter(r => r.userUid === userDoc.id);
+                  
+                  let used = 0;
+                  let pending = 0;
+                  
+                  userRequests.forEach(req => {
+                    if (req.type === 'vacation' && req.status !== 'rejected' && req.status !== 'cancelled') {
+                      const start = parseDate(req.startDate);
+                      const end = parseDate(req.endDate);
+                      const diffTime = Math.abs(end.getTime() - start.getTime());
+                      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
+                      
+                      if (req.status === 'approved') {
+                        used += diffDays;
+                      } else if (req.status.startsWith('pending_')) {
+                        pending += diffDays;
+                      }
+                    }
+                  });
+                  
+                  const annualDays = calculateTotalEarnedDays(userData.entryDate);
+                  await updateDoc(userDoc.ref, {
+                    usedVacationDays: used,
+                    pendingVacationDays: pending,
+                    totalVacationDays: annualDays
+                  });
+                }
               };
 
               toast.promise(promise(), {
                 loading: 'Recalculando todos los saldos...',
-                success: (data) => `Saldos actualizados. Se modificaron ${data.updatedCount} usuarios.`,
-                error: (err) => err.message || 'Error al recalcular saldos'
+                success: 'Saldos de todos los usuarios actualizados',
+                error: 'Error al recalcular saldos'
               });
             }}
             className="bg-orange-50 border border-orange-200 hover:border-orange-500 text-orange-700 px-4 py-2.5 rounded-xl font-bold transition-all flex items-center gap-2 shadow-sm"
@@ -467,28 +440,40 @@ export default function Admin() {
                   <td className="px-6 py-4">
                     <p className="text-slate-700 font-medium">{u.position}</p>
                     <div className="flex flex-col gap-1 mt-1">
-                      <select 
-                        value={u.role}
-                        onChange={(e) => handleRoleChange(u.uid, e.target.value as UserRole)}
-                        className="text-[10px] uppercase font-bold bg-slate-100 border-none rounded px-1.5 py-0.5 focus:ring-1 focus:ring-blue-500 outline-none"
-                      >
-                        <option value="employee">Empleado</option>
-                        <option value="manager">Jefe</option>
-                        <option value="gerencia">Gerencia</option>
-                        <option value="hr">RRHH</option>
-                      </select>
+                      {canEdit ? (
+                        <select 
+                          value={u.role}
+                          onChange={(e) => handleRoleChange(u.uid, e.target.value as UserRole)}
+                          className="text-[10px] uppercase font-bold bg-slate-100 border-none rounded px-1.5 py-0.5 focus:ring-1 focus:ring-blue-500 outline-none"
+                        >
+                          <option value="employee">Empleado</option>
+                          <option value="manager">Jefe</option>
+                          <option value="gerencia">Gerencia</option>
+                          <option value="hr">RRHH</option>
+                        </select>
+                      ) : (
+                        <span className="text-[10px] uppercase font-bold bg-slate-100 text-slate-600 rounded px-1.5 py-0.5">
+                          {u.role === 'employee' ? 'Empleado' : u.role === 'manager' ? 'Jefe' : u.role === 'gerencia' ? 'Gerencia' : 'RRHH'}
+                        </span>
+                      )}
                       
                       {(u.role === 'employee' || u.role === 'manager') && (
-                        <select 
-                          value={u.managerUid || ''}
-                          onChange={(e) => handleManagerChange(u.uid, e.target.value)}
-                          className="text-[10px] font-medium bg-blue-50 border-none rounded px-1.5 py-0.5 focus:ring-1 focus:ring-blue-500 outline-none"
-                        >
-                          <option value="">{u.role === 'manager' ? 'Sin Gerencia' : 'Sin Jefe'}</option>
-                          {users.filter(m => m.uid !== u.uid && (m.role === 'manager' || m.role === 'gerencia' || m.role === 'hr')).map(m => (
-                            <option key={m.uid} value={m.uid}>{m.displayName} ({m.role === 'gerencia' ? 'Gerencia' : 'Jefe'})</option>
-                          ))}
-                        </select>
+                        canEdit ? (
+                          <select 
+                            value={u.managerUid || ''}
+                            onChange={(e) => handleManagerChange(u.uid, e.target.value)}
+                            className="text-[10px] font-medium bg-blue-50 border-none rounded px-1.5 py-0.5 focus:ring-1 focus:ring-blue-500 outline-none"
+                          >
+                            <option value="">{u.role === 'manager' ? 'Sin Gerencia' : 'Sin Jefe'}</option>
+                            {users.filter(m => m.uid !== u.uid && (m.role === 'manager' || m.role === 'gerencia' || m.role === 'hr')).map(m => (
+                              <option key={m.uid} value={m.uid}>{m.displayName} ({m.role === 'gerencia' ? 'Gerencia' : 'Jefe'})</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span className="text-[10px] font-medium bg-blue-50 text-blue-700 rounded px-1.5 py-0.5">
+                            {users.find(m => m.uid === u.managerUid)?.displayName || (u.role === 'manager' ? 'Sin Gerencia' : 'Sin Jefe')}
+                          </span>
+                        )
                       )}
                     </div>
                   </td>
@@ -503,6 +488,9 @@ export default function Admin() {
                       <span className="text-[9px] font-bold bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full uppercase tracking-wider border border-blue-100">
                         Acumulando: {calculateVacationPeriod(u.entryDate)}
                       </span>
+                      <span className="text-[9px] font-bold bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-full uppercase tracking-wider border border-emerald-100" title="Días proporcionales ganados en el periodo actual en acumulación">
+                        Proporcionales: {calculateProportionalDays(u.entryDate)}
+                      </span>
                     </div>
                   </td>
                   <td className="px-6 py-4 text-center font-bold text-slate-900">{u.totalVacationDays}</td>
@@ -510,26 +498,30 @@ export default function Admin() {
                   <td className="px-6 py-4 text-center font-bold text-orange-600">{u.pendingVacationDays}</td>
                   <td className="px-6 py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      <button 
-                        onClick={() => setPasswordUser(u)}
-                        className="p-2 text-slate-400 hover:text-amber-600 transition-colors"
-                        title="Cambiar Contraseña"
-                      >
-                        <Key size={18} />
-                      </button>
-                      <button 
-                        onClick={() => handleEditClick(u)}
-                        className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
-                      >
-                        <Edit2 size={18} />
-                      </button>
-                      {u.email !== 'nmrm01@gmail.com' && (
-                        <button 
-                          onClick={() => setUserToDelete(u.uid)}
-                          className="p-2 text-slate-400 hover:text-red-600 transition-colors"
-                        >
-                          <Trash2 size={18} />
-                        </button>
+                      {canEdit && (
+                        <>
+                          <button 
+                            onClick={() => setPasswordUser(u)}
+                            className="p-2 text-slate-400 hover:text-amber-600 transition-colors"
+                            title="Cambiar Contraseña"
+                          >
+                            <Key size={18} />
+                          </button>
+                          <button 
+                            onClick={() => handleEditClick(u)}
+                            className="p-2 text-slate-400 hover:text-blue-600 transition-colors"
+                          >
+                            <Edit2 size={18} />
+                          </button>
+                          {u.email !== 'nmrm01@gmail.com' && (
+                            <button 
+                              onClick={() => setUserToDelete(u.uid)}
+                              className="p-2 text-slate-400 hover:text-red-600 transition-colors"
+                            >
+                              <Trash2 size={18} />
+                            </button>
+                          )}
+                        </>
                       )}
                     </div>
                   </td>
@@ -561,103 +553,6 @@ export default function Admin() {
           Descargar Plantilla
         </button>
       </div>
-
-      {/* Audit Logs Modal */}
-      <AnimatePresence>
-        {showLogs && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm">
-            <motion.div 
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl max-h-[80vh] overflow-hidden flex flex-col"
-            >
-              <div className="p-6 border-b border-slate-100 flex items-center justify-between bg-slate-50">
-                <div className="flex items-center gap-3">
-                  <div className="bg-slate-900 text-white p-2 rounded-lg">
-                    <ClipboardList size={20} />
-                  </div>
-                  <div>
-                    <h2 className="text-xl font-bold text-slate-900">Bitácora de Auditoría</h2>
-                    <p className="text-xs text-slate-500">Registro de cambios administrativos (Últimos 30 días)</p>
-                  </div>
-                </div>
-                <button onClick={() => setShowLogs(false)} className="text-slate-400 hover:text-slate-600 p-2 hover:bg-slate-100 rounded-full transition-all">
-                  <X size={24} />
-                </button>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-6">
-                <div className="space-y-4">
-                  {auditLogs.length === 0 ? (
-                    <div className="text-center py-12 text-slate-500">
-                      <History size={48} className="mx-auto mb-4 opacity-20" />
-                      <p>No hay registros de auditoría recientes.</p>
-                    </div>
-                  ) : (
-                    <div className="divide-y divide-slate-100">
-                      {auditLogs.map((log) => (
-                        <div key={log.id} className="py-4 first:pt-0 last:pb-0">
-                          <div className="flex items-start justify-between gap-4 mb-2">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded uppercase">
-                                {log.action.replace('_', ' ')}
-                              </span>
-                              <span className="text-xs text-slate-400">
-                                {new Date(log.timestamp).toLocaleString()}
-                              </span>
-                            </div>
-                            <span className="text-[10px] font-mono text-slate-400 bg-slate-50 px-2 py-0.5 rounded">
-                              IP: {log.ip}
-                            </span>
-                          </div>
-                          
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-                            <div>
-                              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Administrador</p>
-                              <p className="text-slate-900 font-medium">{log.adminName}</p>
-                              <p className="text-[10px] text-slate-400">{log.adminEmail}</p>
-                            </div>
-                            <div>
-                              <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider mb-1">Usuario Objetivo</p>
-                              <p className="text-slate-900 font-medium">{log.targetName}</p>
-                              <p className="text-[10px] text-slate-400">{log.targetEmail}</p>
-                            </div>
-                          </div>
-
-                          {log.changes && log.changes.length > 0 && (
-                            <div className="mt-3 bg-slate-50 rounded-lg p-3 border border-slate-100">
-                              <p className="text-[10px] font-bold text-slate-400 uppercase mb-2">Cambios Realizados:</p>
-                              <div className="space-y-2">
-                                {log.changes.map((change, idx) => (
-                                  <div key={idx} className="flex flex-wrap items-center gap-2 text-xs">
-                                    <span className="font-bold text-slate-700">{change.field}:</span>
-                                    <span className="text-red-500 line-through bg-red-50 px-1.5 py-0.5 rounded">
-                                      {String(change.oldValue)}
-                                    </span>
-                                    <span className="text-slate-400">→</span>
-                                    <span className="text-green-600 font-bold bg-green-50 px-1.5 py-0.5 rounded">
-                                      {String(change.newValue)}
-                                    </span>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              
-              <div className="p-4 bg-slate-50 border-t border-slate-100 text-center">
-                <p className="text-[10px] text-slate-400 uppercase font-bold tracking-widest">Fin del Registro</p>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Edit User Modal */}
       <AnimatePresence>

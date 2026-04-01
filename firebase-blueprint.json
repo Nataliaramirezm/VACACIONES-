@@ -43,33 +43,6 @@
         "cancelledAt": { "type": "string", "format": "date-time" }
       },
       "required": ["userUid", "type", "startDate", "endDate", "status"]
-    },
-    "AuditLog": {
-      "title": "AuditLog",
-      "description": "Log of administrative changes",
-      "type": "object",
-      "properties": {
-        "id": { "type": "string" },
-        "timestamp": { "type": "string", "format": "date-time" },
-        "adminUid": { "type": "string" },
-        "adminName": { "type": "string" },
-        "targetUid": { "type": "string" },
-        "targetName": { "type": "string" },
-        "action": { "type": "string", "enum": ["update_user", "delete_user", "update_password", "recalculate_balance"] },
-        "changes": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "field": { "type": "string" },
-              "oldValue": { "type": "any" },
-              "newValue": { "type": "any" }
-            }
-          }
-        },
-        "ipAddress": { "type": "string" }
-      },
-      "required": ["timestamp", "adminUid", "action", "ipAddress"]
     }
   },
   "firestore": {
@@ -80,10 +53,6 @@
     "/requests/{requestId}": {
       "schema": "Request",
       "description": "Vacation and permission requests"
-    },
-    "/audit_logs/{logId}": {
-      "schema": "AuditLog",
-      "description": "Administrative audit logs"
     }
   }
 }

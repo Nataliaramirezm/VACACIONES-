@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useAuth } from '../App';
-import { calculateAnnualVacationDays, calculateTotalEarnedDays, calculateVacationPeriod, calculatePeriodToUse } from '../lib/vacation';
+import { calculateTotalEarnedDays, calculateVacationPeriod, calculatePeriodToUse, calculateProportionalDays } from '../lib/vacation';
 import { addDoc, collection, getDocs, query, where, doc, updateDoc, increment } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { Calendar, Clock, CheckCircle, XCircle, Plus, Send, Info, Users, RotateCcw } from 'lucide-react';
@@ -50,7 +50,6 @@ export default function Dashboard() {
     </div>
   );
 
-  const annualDays = calculateAnnualVacationDays(profile.entryDate);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,26 +86,36 @@ export default function Dashboard() {
         initialStatus = 'pending_replacement';
       }
 
-      await addDoc(collection(db, 'requests'), {
-        userUid: profile.uid,
-        userName: profile.displayName,
-        managerUid: requestManagerUid,
-        replacementUid: formData.replacementUid,
-        replacementName: replacement?.displayName || 'No asignado',
-        type: formData.type,
-        startDate: formData.startDate,
-        endDate: formData.endDate,
-        reason: formData.reason,
-        status: initialStatus,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-      });
+      try {
+        await addDoc(collection(db, 'requests'), {
+          userUid: profile.uid,
+          userName: profile.displayName,
+          managerUid: requestManagerUid,
+          replacementUid: formData.replacementUid,
+          replacementName: replacement?.displayName || 'No asignado',
+          type: formData.type,
+          startDate: formData.startDate,
+          endDate: formData.endDate,
+          reason: formData.reason,
+          status: initialStatus,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.CREATE, 'requests');
+        return;
+      }
 
       if (formData.type === 'vacation') {
-        const userRef = doc(db, 'users', profile.uid);
-        await updateDoc(userRef, {
-          pendingVacationDays: increment(diffDays)
-        });
+        try {
+          const userRef = doc(db, 'users', profile.uid);
+          await updateDoc(userRef, {
+            pendingVacationDays: increment(diffDays)
+          });
+        } catch (error) {
+          handleFirestoreError(error, OperationType.UPDATE, `users/${profile.uid}`);
+          return;
+        }
       }
 
       setSuccess(true);
@@ -116,7 +125,8 @@ export default function Dashboard() {
         setFormData({ type: 'vacation', startDate: '', endDate: '', reason: '', replacementUid: '', gerenciaUid: '' });
       }, 2000);
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'requests');
+      // General error fallback
+      console.error("Error in handleSubmit:", error);
     } finally {
       setLoading(false);
     }
@@ -178,6 +188,9 @@ export default function Dashboard() {
               </span>
               <span className="bg-blue-100 text-blue-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-blue-200">
                 En Acumulación: {calculateVacationPeriod(profile.entryDate)}
+              </span>
+              <span className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-0.5 rounded-full uppercase tracking-wider border border-emerald-200" title="Días proporcionales ganados en el periodo actual en acumulación">
+                Días Proporcionales: {calculateProportionalDays(profile.entryDate)}
               </span>
             </div>
           </div>

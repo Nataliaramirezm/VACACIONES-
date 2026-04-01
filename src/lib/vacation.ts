@@ -37,7 +37,31 @@ export function calculateAnnualVacationDays(entryDateStr: string): number {
   return baseDays + additionalDays;
 }
 
+export function calculateProportionalDays(entryDateStr: string): number {
+  if (!entryDateStr) return 0;
+  const entryDate = parseDate(entryDateStr);
+  const now = new Date();
+  
+  let yearsOfService = now.getFullYear() - entryDate.getFullYear();
+  const m = now.getMonth() - entryDate.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < entryDate.getDate())) {
+    yearsOfService--;
+  }
+
+  const lastAnniversary = new Date(entryDate);
+  lastAnniversary.setFullYear(entryDate.getFullYear() + yearsOfService);
+  
+  let monthsSinceAnniversary = now.getMonth() - lastAnniversary.getMonth() + (12 * (now.getFullYear() - lastAnniversary.getFullYear()));
+  if (now.getDate() < lastAnniversary.getDate()) {
+    monthsSinceAnniversary--;
+  }
+  
+  const currentYearEntitlement = yearsOfService < 5 ? 15 : (15 + Math.min(yearsOfService - 4, 15));
+  return Math.floor(monthsSinceAnniversary * (currentYearEntitlement / 12));
+}
+
 export function calculateTotalEarnedDays(entryDateStr: string): number {
+  if (!entryDateStr) return 0;
   const entryDate = parseDate(entryDateStr);
   const now = new Date();
   
@@ -56,14 +80,6 @@ export function calculateTotalEarnedDays(entryDateStr: string): number {
       total += 15 + additional;
     }
   }
-
-  // Proportional days for the current year
-  const lastAnniversary = new Date(entryDate);
-  lastAnniversary.setFullYear(entryDate.getFullYear() + yearsOfService);
-  const monthsSinceAnniversary = now.getMonth() - lastAnniversary.getMonth() + (12 * (now.getFullYear() - lastAnniversary.getFullYear()));
-  
-  const currentYearEntitlement = yearsOfService < 5 ? 15 : (15 + Math.min(yearsOfService - 4, 15));
-  total += Math.floor(monthsSinceAnniversary * (currentYearEntitlement / 12));
 
   return total;
 }
@@ -100,8 +116,15 @@ export function calculateVacationPeriod(entryDateStr: string): string {
  * Determines which vacation period is currently being consumed based on used days.
  * Follows FIFO (First-In, First-Out) logic.
  */
-export function calculatePeriodToUse(entryDateStr: string, usedDays: number): string {
-  if (!entryDateStr) return 'N/A';
+export interface PeriodInfo {
+  period: string;
+  daysInPeriod: number;
+  usedInPeriod: number;
+  remainingInPeriod: number;
+}
+
+export function calculatePeriodToUse(entryDateStr: string, usedDays: number): PeriodInfo {
+  if (!entryDateStr) return { period: 'N/A', daysInPeriod: 0, usedInPeriod: 0, remainingInPeriod: 0 };
   const entryDate = parseDate(entryDateStr);
   const now = new Date();
   
@@ -120,8 +143,8 @@ export function calculatePeriodToUse(entryDateStr: string, usedDays: number): st
   // We check each year from the first one
   let remainingUsed = usedDays;
   
-  // We iterate up to the current year + 1 (to catch the one being accumulated)
-  for (let i = 1; i <= yearsOfService + 1; i++) {
+  // We iterate up to the current year (completed periods)
+  for (let i = 1; i <= yearsOfService; i++) {
     let daysInThisPeriod = 0;
     if (i <= 5) {
       daysInThisPeriod = 15;
@@ -135,13 +158,29 @@ export function calculatePeriodToUse(entryDateStr: string, usedDays: number): st
 
     if (remainingUsed < daysInThisPeriod) {
       // This is the period currently being used
-      return `${monthName} ${startYear} - ${monthName} ${endYear}`;
+      return {
+        period: `${monthName} ${startYear} - ${monthName} ${endYear}`,
+        daysInPeriod: daysInThisPeriod,
+        usedInPeriod: remainingUsed,
+        remainingInPeriod: daysInThisPeriod - remainingUsed
+      };
     }
     
     remainingUsed -= daysInThisPeriod;
   }
 
-  return "Periodo Actual";
+  // If we've used all days from completed periods, we are waiting for the next one to complete
+  // or we are in the first year of service
+  const currentStartYear = entryDate.getFullYear() + yearsOfService;
+  const currentEndYear = currentStartYear + 1;
+  const daysInCurrentPeriod = yearsOfService + 1 <= 5 ? 15 : 15 + Math.min((yearsOfService + 1) - 5, 15);
+
+  return { 
+    period: `${monthName} ${currentStartYear} - ${monthName} ${currentEndYear}`, 
+    daysInPeriod: daysInCurrentPeriod, 
+    usedInPeriod: remainingUsed, 
+    remainingInPeriod: daysInCurrentPeriod - remainingUsed 
+  };
 }
 
 /**

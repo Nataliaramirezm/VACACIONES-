@@ -3,7 +3,7 @@ import { useAuth } from '../App';
 import { collection, query, where, onSnapshot, orderBy, doc, updateDoc, getDoc, increment } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { VacationRequest } from '../types';
-import { FileDown, Clock, CheckCircle, XCircle, Calendar, AlertCircle, Ban } from 'lucide-react';
+import { FileDown, Clock, CheckCircle, XCircle, Calendar, AlertCircle, Ban, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { generateRequestPDF } from '../lib/pdf';
 import { toast, Toaster } from 'sonner';
@@ -169,6 +169,12 @@ export default function Requests() {
                       <Calendar size={14} />
                       {formatDate(req.startDate)} - {formatDate(req.endDate)}
                     </p>
+                    {req.replacementName && (
+                      <p className="text-xs text-blue-600 font-medium flex items-center gap-1.5 mt-1">
+                        <Users size={12} />
+                        Reemplazo: {req.replacementName}
+                      </p>
+                    )}
                     <p className="text-sm text-slate-600 mt-2 line-clamp-1">{req.reason}</p>
                   </div>
                 </div>

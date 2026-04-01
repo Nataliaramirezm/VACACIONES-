@@ -4,7 +4,7 @@ import { db, auth, handleFirestoreError, OperationType } from '../firebase';
 import { useNavigate } from 'react-router-dom';
 import { UserPlus, User as UserIcon, Briefcase, Calendar, Users, AlertCircle } from 'lucide-react';
 import { motion } from 'framer-motion';
-import { calculateAnnualVacationDays } from '../lib/vacation';
+import { calculateTotalEarnedDays } from '../lib/vacation';
 import { UserProfile } from '../types';
 import { toast } from 'sonner';
 import { useAuth } from '../App';
@@ -58,7 +58,7 @@ export default function CompleteProfile() {
     setError('');
 
     try {
-      const total = calculateAnnualVacationDays(entryDate);
+      const totalEarned = calculateTotalEarnedDays(entryDate);
       
       const newUser: UserProfile = {
         uid: auth.currentUser.uid,
@@ -68,7 +68,7 @@ export default function CompleteProfile() {
         entryDate,
         role: role,
         managerUid: (role !== 'employee') ? '' : managerUid,
-        totalVacationDays: total,
+        totalVacationDays: totalEarned,
         usedVacationDays: 0,
         pendingVacationDays: 0,
       };

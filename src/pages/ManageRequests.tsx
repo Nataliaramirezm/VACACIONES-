@@ -3,7 +3,7 @@ import { useAuth } from '../App';
 import { collection, query, onSnapshot, doc, updateDoc, getDoc, increment, where, or } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
 import { VacationRequest, UserProfile, RequestStatus } from '../types';
-import { CheckCircle, XCircle, Calendar, User, FileText, AlertCircle, Clock, Download } from 'lucide-react';
+import { CheckCircle, XCircle, Calendar, User, FileText, AlertCircle, Clock, Download, Users } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { toast, Toaster } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -14,7 +14,7 @@ export default function ManageRequests() {
   const [requests, setRequests] = useState<VacationRequest[]>([]);
   const [loading, setLoading] = useState(true);
 
-  const isSuperAdmin = profile?.email === 'nmrm01@gmail.com' || profile?.email === 'asis.tthh@compufacil.com.ec';
+  const isSuperAdmin = profile?.email === 'nmrm01@gmail.com' || profile?.email === 'asis.tthh@compufacil.com.ec' || profile?.email === 'tthh@compufacil.com.ec';
   const isHR = profile?.role === 'hr' || isSuperAdmin;
   const isGerencia = profile?.role === 'gerencia' || isSuperAdmin;
   const isManager = profile?.role === 'manager' || profile?.role === 'gerencia' || profile?.role === 'hr' || isSuperAdmin;
@@ -242,6 +242,12 @@ export default function ManageRequests() {
                       <Calendar size={14} />
                       {formatDate(req.startDate)} - {formatDate(req.endDate)}
                     </p>
+                    {req.replacementName && (
+                      <p className="text-xs text-blue-600 font-medium flex items-center gap-1.5 mt-1">
+                        <Users size={12} />
+                        Reemplazo: {req.replacementName}
+                      </p>
+                    )}
                     <p className="text-sm text-slate-700 mt-2 italic">"{req.reason}"</p>
                   </div>
                 </div>
@@ -289,7 +295,15 @@ export default function ManageRequests() {
             <tbody className="divide-y divide-slate-50">
               {processedRequests.slice(0, 10).map(req => (
                 <tr key={req.id} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-6 py-4 font-medium text-slate-900">{req.userName}</td>
+                  <td className="px-6 py-4 font-medium text-slate-900">
+                    <div>{req.userName}</div>
+                    {req.replacementName && (
+                      <div className="text-[10px] text-blue-600 flex items-center gap-1 mt-0.5">
+                        <Users size={10} />
+                        Reemplazo: {req.replacementName}
+                      </div>
+                    )}
+                  </td>
                   <td className="px-6 py-4 capitalize">{req.type}</td>
                   <td className="px-6 py-4 text-slate-500">
                     {formatDate(req.startDate)} - {formatDate(req.endDate)}

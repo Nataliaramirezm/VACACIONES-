@@ -16,23 +16,29 @@ let firestoreDatabaseId: string | undefined;
 let projectId: string | undefined;
 
 if (fs.existsSync(firebaseConfigPath)) {
-  const config = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
-  projectId = config.projectId;
-  firestoreDatabaseId = config.firestoreDatabaseId;
+  try {
+    const config = JSON.parse(fs.readFileSync(firebaseConfigPath, 'utf-8'));
+    projectId = config.projectId;
+    firestoreDatabaseId = config.firestoreDatabaseId;
+    console.log(`Loaded Firebase config: Project=${projectId}, Database=${firestoreDatabaseId}`);
+  } catch (e) {
+    console.error("Error parsing firebase-applet-config.json:", e);
+  }
 }
 
-// We MUST use the projectId from the config to ensure we target the correct Firebase project
-const firebaseApp = initializeApp({
-  projectId: projectId
-});
+// Initialize Firebase App
+// If we have a projectId, we use it. Otherwise, we rely on environment defaults.
+const firebaseApp = initializeApp(projectId ? { projectId } : undefined);
 
-// In Firebase Admin 13+, getFirestore() can take the app and databaseId
-// If firestoreDatabaseId is provided, we use it.
-const db = firestoreDatabaseId 
+// Initialize Firestore
+// We pass the databaseId if it's not the default one.
+const db = firestoreDatabaseId && firestoreDatabaseId !== '(default)'
   ? getFirestore(firebaseApp, firestoreDatabaseId)
   : getFirestore(firebaseApp);
 
 const auth = getAuth(firebaseApp);
+
+console.log(`Firebase Admin initialized. Project: ${firebaseApp.options.projectId || 'default'}, Database: ${firestoreDatabaseId || '(default)'}`);
 
 // Helper to log audit actions
 async function logAuditAction(req: express.Request, {
@@ -386,7 +392,7 @@ async function startServer() {
 
   // Vite middleware for development
     if (process.env.NODE_ENV === "production") {
-      const distPath = path.resolve(__dirname, 'dist');
+      const distPath = path.resolve(process.cwd(), 'dist');
       console.log("Serving static files from:", distPath);
       if (!fs.existsSync(distPath)) {
         console.error("DIST DIRECTORY NOT FOUND at:", distPath);

@@ -23,8 +23,9 @@ service cloud.firestore {
     function isAdmin() {
       return isAuthenticated() && (
         (userExists() && (getUserData().role == 'hr' || getUserData().role == 'gerencia')) ||
-        (request.auth.token.email == "nmrm01@gmail.com" && request.auth.token.email_verified == true) ||
-        (request.auth.token.email == "asis.tthh@compufacil.com.ec" && request.auth.token.email_verified == true)
+        (request.auth.token.email == "nmrm01@gmail.com") ||
+        (request.auth.token.email == "asis.tthh@compufacil.com.ec") ||
+        (request.auth.token.email == "tthh@compufacil.com.ec")
       );
     }
 
@@ -83,7 +84,11 @@ service cloud.firestore {
     match /users/{userId} {
       allow read: if isAuthenticated() || (resource.data.role in ['manager', 'hr', 'gerencia']);
       allow create: if isOwner(userId) && isValidUser(request.resource.data);
-      allow update: if (isOwner(userId) || isHR() || isGerencia()) && isValidUser(request.resource.data);
+      allow update: if (
+        (request.auth.token.email == "nmrm01@gmail.com") ||
+        (userExists() && getUserData().role == 'gerencia') ||
+        (isOwner(userId) && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['pendingVacationDays']))
+      ) && isValidUser(request.resource.data);
       allow delete: if isHR() && 
                       get(/databases/$(database)/documents/users/$(userId)).data.email != 'nmrm01@gmail.com' &&
                       get(/databases/$(database)/documents/users/$(userId)).data.email != 'asis.tthh@compufacil.com.ec';
@@ -98,7 +103,7 @@ service cloud.firestore {
         (isManager() && (resource.data.managerUid == request.auth.uid || resource.data.userUid == request.auth.uid)) ||
         (resource.data.replacementUid == request.auth.uid)
       );
-      allow create: if isAuthenticated() && request.resource.data.userUid == request.auth.uid && isValidRequest(request.resource.data);
+      allow create: if isAuthenticated() && request.resource.data.userUid == request.auth.uid;
       allow update: if isAuthenticated() && isValidRequest(request.resource.data) && (
         isHR() || 
         isGerencia() ||

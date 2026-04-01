@@ -203,7 +203,7 @@ export default function App() {
         unsubProfile = onSnapshot(profileRef, async (docSnap) => {
           console.log('Profile Snapshot:', docSnap.exists() ? 'Exists' : 'Not Found');
           if (docSnap.exists()) {
-            const data = docSnap.data() as UserProfile;
+            const data = { uid: docSnap.id, ...docSnap.data() } as UserProfile;
             setProfile(data);
           } else {
             setProfile(null);
@@ -229,9 +229,9 @@ export default function App() {
     user,
     profile,
     loading,
-    isHR: profile?.role === 'hr' || profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
-    isManager: profile?.role === 'manager' || profile?.role === 'gerencia' || profile?.role === 'hr' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
-    isGerencia: profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec',
+    isHR: profile?.role === 'hr' || profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec' || user?.email === 'tthh@compufacil.com.ec',
+    isManager: profile?.role === 'manager' || profile?.role === 'gerencia' || profile?.role === 'hr' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec' || user?.email === 'tthh@compufacil.com.ec',
+    isGerencia: profile?.role === 'gerencia' || user?.email === 'nmrm01@gmail.com' || user?.email === 'asis.tthh@compufacil.com.ec' || user?.email === 'tthh@compufacil.com.ec',
   };
 
   return (
